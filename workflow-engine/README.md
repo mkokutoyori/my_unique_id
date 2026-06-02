@@ -39,6 +39,29 @@ running on Keycloak's cluster-aware timer (NFR-1).
 | POST   | `/requests/{id}/steps/{stepId}/reject`          | Reject (terminates flow)           |
 | POST   | `/requests/{id}/cancel`                         | Requester cancels                  |
 
+## Enterprise enhancements (au-delà du BRD)
+
+| Fonctionnalité                            | Implémentation                                                              |
+|-------------------------------------------|-----------------------------------------------------------------------------|
+| **Accès JIT / temporaire**                | `WorkflowDefinition.validityMinutes` → `RevocationJob` planifié, révoqué automatiquement par le scheduler à expiration. |
+| **Politiques SoD avancées**               | `SodPolicy` (paires de cibles toxiques), vérifiées à la soumission **et** juste avant le provisioning. |
+| **Délégation d'approbation**              | `Delegation` (out-of-office) → `applyDelegations` étend l'ensemble des approbateurs éligibles. |
+| **Justification métier obligatoire**      | `WorkflowDefinition.requireJustification` + champ `justification` sur l'instance. |
+| **Score de risque + étapes conditionnelles** | `riskScoreExpression` (DSL pondéré), `WorkflowStep.skipCondition` (`risk < 30`, `attr.country == FR`...). |
+| **Webhooks signés HMAC-SHA256**           | `WorkflowStep.webhookSecret` → header `X-WF-Signature: sha256=...` (Slack/Teams compatible). |
+| **Émission d'events Keycloak**            | `KeycloakEventEmitter` publie chaque transition sur l'EventStore (intégration SIEM Splunk/ELK). |
+| **Tableau de bord métriques**             | Endpoint `GET /metrics` (counts par statut, breaches SLA 30j, temps moyen d'approbation). |
+
+### Endpoints additionnels
+
+| Méthode | Path                  | Rôle                                           |
+|---------|-----------------------|------------------------------------------------|
+| GET     | `/delegations`        | Mes délégations actives                        |
+| POST    | `/delegations`        | Créer/mettre à jour une délégation             |
+| GET     | `/sod-policies`       | Politiques SoD actives                         |
+| POST    | `/sod-policies`       | Publier une politique SoD (admin)              |
+| GET     | `/metrics`            | Tableau de bord gouvernance                    |
+
 ## Extension points
 
 - `WorkflowEngineProvider` — replace the whole engine.

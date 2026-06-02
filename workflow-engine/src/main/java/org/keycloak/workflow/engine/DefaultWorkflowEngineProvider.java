@@ -2,9 +2,15 @@ package org.keycloak.workflow.engine;
 
 import org.jboss.logging.Logger;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserModel;
+import org.keycloak.workflow.engine.defaults.KeycloakEventEmitter;
 import org.keycloak.workflow.model.AuditEntry;
 import org.keycloak.workflow.model.BusinessCalendar;
+import org.keycloak.workflow.model.Delegation;
 import org.keycloak.workflow.model.Enums;
+import org.keycloak.workflow.model.RevocationJob;
+import org.keycloak.workflow.model.SodPolicy;
 import org.keycloak.workflow.model.WorkflowDefinition;
 import org.keycloak.workflow.model.WorkflowInstance;
 import org.keycloak.workflow.model.WorkflowStep;
@@ -16,11 +22,14 @@ import org.keycloak.workflow.spi.WorkflowEngineProvider;
 import org.keycloak.workflow.spi.WorkflowStore;
 
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -78,6 +87,12 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
 
     @Override
     public WorkflowInstance submit(String realmId, String requesterId, String targetType, String targetId) {
+        return submit(realmId, requesterId, targetType, targetId, null);
+    }
+
+    @Override
+    public WorkflowInstance submit(String realmId, String requesterId, String targetType, String targetId,
+                                   String justification) {
         WorkflowDefinition def = store.getActiveDefinitionFor(realmId, targetType, targetId)
                 .orElseThrow(() -> new IllegalStateException("No active workflow for " + targetType + ":" + targetId));
 
@@ -91,6 +106,32 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         inst.setTargetId(targetId);
         inst.setSubmittedAt(Instant.now());
         inst.setStatus(Enums.InstanceStatus.RUNNING);
+        inst.setJustification(justification);
+
+        // Justification gate.
+        if (def.isRequireJustification() && (justification == null || justification.isBlank())) {
+            audit(inst, null, requesterId, Enums.AuditAction.JUSTIFICATION_MISSING, "justification required");
+            throw new IllegalArgumentException("Business justification is required for this workflow");
+        }
+
+        // SoD toxic-combination policies (block at submit).
+        Optional<SodPolicyEvaluator.Violation> v =
+                new SodPolicyEvaluator(session, store == null ? List.<SodPolicy>of() : safeSodList(realmId))
+                        .check(realmId, requesterId, targetType, targetId);
+        if (v.isPresent()) {
+            audit(inst, null, requesterId, Enums.AuditAction.SOD_POLICY_BLOCKED,
+                    "policy=" + v.get().policyName() + " conflict=" + v.get().conflictingTarget());
+            throw new SecurityException("SoD policy violation: conflicts with " + v.get().conflictingTarget());
+        }
+
+        // Risk scoring (FR enhancement).
+        if (def.getRiskScoreExpression() != null) {
+            Map<String, Object> ctx = ExpressionEval.context(targetType, targetId, requesterId, null,
+                    userAttributes(realmId, requesterId));
+            int risk = ExpressionEval.evalRisk(def.getRiskScoreExpression(), ctx);
+            inst.setRiskScore(risk);
+            audit(inst, null, requesterId, Enums.AuditAction.RISK_EVALUATED, "score=" + risk);
+        }
 
         for (WorkflowStep step : def.getSteps()) {
             WorkflowStepInstance si = new WorkflowStepInstance();
@@ -102,10 +143,36 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         }
         inst.setCurrentStepIndex(0);
         store.saveInstance(inst);
-        audit(inst, null, requesterId, Enums.AuditAction.SUBMITTED, "request submitted");
+        audit(inst, null, requesterId, Enums.AuditAction.SUBMITTED,
+                "request submitted" + (justification != null ? " — " + justification : ""));
+        emitEvent(inst, Enums.AuditAction.SUBMITTED, null);
 
         activateStep(inst, def, 0);
         return inst;
+    }
+
+    private List<SodPolicy> safeSodList(String realmId) {
+        try { return store.findActiveSodPolicies(realmId); }
+        catch (UnsupportedOperationException | AbstractMethodError e) { return List.of(); }
+    }
+
+    private Map<String, String> userAttributes(String realmId, String userId) {
+        Map<String, String> out = new HashMap<>();
+        if (session == null) return out;
+        try {
+            RealmModel realm = session.realms().getRealm(realmId);
+            if (realm == null) return out;
+            UserModel u = session.users().getUserById(realm, userId);
+            if (u == null) return out;
+            u.getAttributes().forEach((k, vs) -> { if (!vs.isEmpty()) out.put(k, vs.get(0)); });
+        } catch (RuntimeException ignored) {}
+        return out;
+    }
+
+    private void emitEvent(WorkflowInstance inst, Enums.AuditAction action, String details) {
+        if (session == null) return;
+        try { new KeycloakEventEmitter(session).emit(inst, action, details); }
+        catch (RuntimeException ignored) {}
     }
 
     private void activateStep(WorkflowInstance inst, WorkflowDefinition def, int index) {
@@ -115,6 +182,23 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         }
         WorkflowStep step = def.getSteps().get(index);
         WorkflowStepInstance si = inst.getStepInstances().get(index);
+
+        // Conditional skip (risk-based or attribute-based).
+        if (step.getSkipCondition() != null && !step.getSkipCondition().isBlank()) {
+            Map<String, Object> ctx = ExpressionEval.context(
+                    inst.getTargetType(), inst.getTargetId(), inst.getRequesterId(),
+                    inst.getRiskScore(), userAttributes(inst.getRealmId(), inst.getRequesterId()));
+            if (ExpressionEval.evalSkip(step.getSkipCondition(), ctx)) {
+                si.setStatus(Enums.StepStatus.SKIPPED);
+                si.setStartedAt(Instant.now());
+                si.setDecidedAt(Instant.now());
+                store.saveInstance(inst);
+                audit(inst, si, null, Enums.AuditAction.STEP_SKIPPED,
+                        "condition: " + step.getSkipCondition());
+                activateStep(inst, def, index + 1);
+                return;
+            }
+        }
 
         // Resolve assignees (cas limite "manager absent" => fallback group).
         List<String> assignees = resolver.resolve(inst.getRealmId(), inst.getRequesterId(),
@@ -128,10 +212,12 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         }
 
         // SoD: if the requester is the sole resolved approver, escalate immediately (FR-6.2 + cas limite #2).
-        if (assignees.size() == 1 && assignees.get(0).equals(inst.getRequesterId())) {
+        Set<String> effective = applyDelegations(inst.getRealmId(), assignees);
+        effective.remove(inst.getRequesterId());
+        if (effective.isEmpty() && !assignees.isEmpty()) {
             audit(inst, si, inst.getRequesterId(), Enums.AuditAction.SOD_BLOCKED,
-                    "requester is sole approver; auto-escalating");
-            applyEscalation(inst, def, index, "SoD: requester is sole approver");
+                    "no approver after SoD/delegation filtering; auto-escalating");
+            applyEscalation(inst, def, index, "SoD: no eligible approver");
             return;
         }
 
@@ -142,6 +228,19 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         store.saveInstance(inst);
         audit(inst, si, null, Enums.AuditAction.STEP_STARTED, "assigned to " + si.getCurrentAssigneeRef());
         notifyStep(inst, si, def, step, NotificationGateway.Kind.ASSIGNED);
+    }
+
+    /** Expand the candidate set with active delegates. */
+    private Set<String> applyDelegations(String realmId, List<String> base) {
+        Set<String> result = new LinkedHashSet<>(base);
+        try {
+            for (String userId : base) {
+                for (Delegation d : store.findActiveDelegationsFor(realmId, userId)) {
+                    if (d.coversNow()) result.add(d.getDelegateId());
+                }
+            }
+        } catch (UnsupportedOperationException | AbstractMethodError ignored) {}
+        return result;
     }
 
     private Instant computeDeadline(WorkflowDefinition def, WorkflowStep step, Instant from) {
@@ -209,7 +308,9 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
     private boolean isAuthorizedApprover(WorkflowInstance inst, WorkflowStepInstance si, String actorUserId) {
         List<String> candidates = resolver.resolve(inst.getRealmId(), inst.getRequesterId(),
                 si.getCurrentAssigneeType(), si.getCurrentAssigneeRef());
-        return candidates.contains(actorUserId);
+        if (candidates.contains(actorUserId)) return true;
+        // Delegations: an active delegate of any candidate is also authorized.
+        return applyDelegations(inst.getRealmId(), candidates).contains(actorUserId);
     }
 
     @Override
@@ -228,6 +329,22 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
     // ---------- Completion + provisioning (FR-5.1) ----------
 
     private void complete(WorkflowInstance inst) {
+        WorkflowDefinition def = store.getDefinition(inst.getDefinitionId(), inst.getDefinitionVersion()).orElse(null);
+
+        // Final SoD policy check just before provisioning (state may have changed since submit).
+        Optional<SodPolicyEvaluator.Violation> v = new SodPolicyEvaluator(
+                session, safeSodList(inst.getRealmId()))
+                .check(inst.getRealmId(), inst.getRequesterId(), inst.getTargetType(), inst.getTargetId());
+        if (v.isPresent()) {
+            inst.setStatus(Enums.InstanceStatus.REJECTED);
+            inst.setCompletedAt(Instant.now());
+            store.saveInstance(inst);
+            audit(inst, null, null, Enums.AuditAction.SOD_POLICY_BLOCKED,
+                    "policy=" + v.get().policyName() + " conflict=" + v.get().conflictingTarget());
+            emitEvent(inst, Enums.AuditAction.SOD_POLICY_BLOCKED, v.get().policyName());
+            return;
+        }
+
         inst.setStatus(Enums.InstanceStatus.APPROVED);
         inst.setCompletedAt(Instant.now());
         store.saveInstance(inst);
@@ -242,11 +359,32 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         if (ok) {
             audit(inst, null, null, Enums.AuditAction.PROVISIONING_OK,
                     "granted " + inst.getTargetType() + ":" + inst.getTargetId());
+            emitEvent(inst, Enums.AuditAction.PROVISIONING_OK, null);
+            scheduleRevocationIfJit(inst, def);
         } else {
             inst.setStatus(Enums.InstanceStatus.FAILED);
             store.saveInstance(inst);
             audit(inst, null, null, Enums.AuditAction.PROVISIONING_FAILED, "provisioning step failed");
+            emitEvent(inst, Enums.AuditAction.PROVISIONING_FAILED, null);
         }
+    }
+
+    private void scheduleRevocationIfJit(WorkflowInstance inst, WorkflowDefinition def) {
+        if (def == null || def.getValidityMinutes() == null || def.getValidityMinutes() <= 0) return;
+        Instant expiresAt = Instant.now().plusSeconds(def.getValidityMinutes() * 60);
+        inst.setExpiresAt(expiresAt);
+        store.saveInstance(inst);
+        RevocationJob job = new RevocationJob();
+        job.setId(UUID.randomUUID().toString());
+        job.setRealmId(inst.getRealmId());
+        job.setInstanceId(inst.getId());
+        job.setUserId(inst.getRequesterId());
+        job.setTargetType(inst.getTargetType());
+        job.setTargetId(inst.getTargetId());
+        job.setRevokeAt(expiresAt);
+        try { store.saveRevocationJob(job); } catch (UnsupportedOperationException | AbstractMethodError ignored) {}
+        audit(inst, null, null, Enums.AuditAction.REVOCATION_SCHEDULED,
+                "expires=" + expiresAt + " (validity=" + def.getValidityMinutes() + "m)");
     }
 
     // ---------- Background processing: SLA + reminders + escalation (FR-2/3/4) ----------
@@ -271,6 +409,27 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
                 fireDueReminders(inst, si, def, step, now);
             }
         }
+
+        // JIT auto-revocation pass.
+        try {
+            for (RevocationJob job : store.findDueRevocations(now)) {
+                if (job.getStatus() != RevocationJob.Status.SCHEDULED) continue;
+                boolean ok = false;
+                try { ok = provisioning.revoke(job.getRealmId(), job.getUserId(),
+                                              job.getTargetType(), job.getTargetId()); }
+                catch (RuntimeException e) { LOG.errorf(e, "revocation error for job %s", job.getId()); }
+                job.setStatus(ok ? RevocationJob.Status.DONE : RevocationJob.Status.FAILED);
+                job.setAttempts(job.getAttempts() + 1);
+                store.saveRevocationJob(job);
+                WorkflowInstance owner = store.getInstance(job.getInstanceId()).orElse(null);
+                if (owner != null) {
+                    audit(owner, null, null,
+                            ok ? Enums.AuditAction.REVOKED : Enums.AuditAction.REVOCATION_FAILED,
+                            job.getTargetType() + ":" + job.getTargetId());
+                    emitEvent(owner, ok ? Enums.AuditAction.REVOKED : Enums.AuditAction.REVOCATION_FAILED, null);
+                }
+            }
+        } catch (UnsupportedOperationException | AbstractMethodError ignored) {}
     }
 
     private void fireDueReminders(WorkflowInstance inst, WorkflowStepInstance si,
@@ -346,11 +505,12 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         if (notifier == null) return;
         List<String> recipients = resolver.resolve(inst.getRealmId(), inst.getRequesterId(),
                 si.getCurrentAssigneeType(), si.getCurrentAssigneeRef());
+        Set<String> withDelegates = applyDelegations(inst.getRealmId(), recipients);
         for (Enums.NotificationChannel ch : step.getChannels()) {
             if (ch == Enums.NotificationChannel.WEBHOOK) {
-                notifier.notify(inst, si, kind, ch, step.getWebhookUrl());
+                notifier.notify(inst, si, kind, ch, step.getWebhookUrl(), step.getWebhookSecret());
             } else {
-                for (String userId : recipients) {
+                for (String userId : withDelegates) {
                     notifier.notify(inst, si, kind, ch, userId);
                 }
             }
@@ -369,6 +529,42 @@ public class DefaultWorkflowEngineProvider implements WorkflowEngineProvider {
         e.setAction(action);
         e.setDetails(details);
         store.appendAudit(e);
+    }
+
+    // ---------- Delegations / SoD / metrics (FR enhancement) ----------
+
+    @Override
+    public void saveDelegation(Delegation d) {
+        if (d.getId() == null) d.setId(UUID.randomUUID().toString());
+        store.saveDelegation(d);
+    }
+
+    @Override
+    public List<Delegation> listDelegations(String realmId, String userId) {
+        List<Delegation> out = new ArrayList<>(store.findActiveDelegationsFor(realmId, userId));
+        out.addAll(store.findDelegationsByDelegate(realmId, userId));
+        return out;
+    }
+
+    @Override
+    public void saveSodPolicy(SodPolicy p) {
+        if (p.getId() == null) p.setId(UUID.randomUUID().toString());
+        store.saveSodPolicy(p);
+    }
+
+    @Override
+    public List<SodPolicy> listSodPolicies(String realmId) { return store.findActiveSodPolicies(realmId); }
+
+    @Override
+    public Map<String, Object> metrics(String realmId) {
+        Map<String, Object> m = new HashMap<>();
+        Instant since = Instant.now().minusSeconds(30L * 24 * 3600);
+        for (Enums.InstanceStatus s : Enums.InstanceStatus.values()) {
+            m.put("count_" + s.name().toLowerCase(), store.countInstancesByStatus(realmId, s.name()));
+        }
+        m.put("sla_breaches_30d", store.countSlaBreaches(realmId, since));
+        m.put("avg_approval_minutes_30d", store.avgApprovalMinutes(realmId, since));
+        return m;
     }
 
     @Override public void close() { /* no-op; session manages transactions */ }

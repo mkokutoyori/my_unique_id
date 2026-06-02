@@ -19,6 +19,10 @@ public class WorkflowDefinitionEntity {
     private boolean active;
     private String fallbackGroupId;
     private String calendarId;
+    private Long validityMinutes;
+    private boolean requireJustification;
+    @Column(length = 2000)
+    private String riskScoreExpression;
 
     /** Serialized JSON of steps. */
     @Lob @Column(name = "steps_json")
@@ -46,4 +50,10 @@ public class WorkflowDefinitionEntity {
     public void setCalendarId(String c) { this.calendarId = c; }
     public String getStepsJson() { return stepsJson; }
     public void setStepsJson(String s) { this.stepsJson = s; }
+    public Long getValidityMinutes() { return validityMinutes; }
+    public void setValidityMinutes(Long v) { this.validityMinutes = v; }
+    public boolean isRequireJustification() { return requireJustification; }
+    public void setRequireJustification(boolean r) { this.requireJustification = r; }
+    public String getRiskScoreExpression() { return riskScoreExpression; }
+    public void setRiskScoreExpression(String e) { this.riskScoreExpression = e; }
 }

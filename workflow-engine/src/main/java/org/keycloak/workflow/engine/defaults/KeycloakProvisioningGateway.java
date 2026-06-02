@@ -45,4 +45,30 @@ public class KeycloakProvisioningGateway implements ProvisioningGateway {
         }
         return false;
     }
+
+    @Override
+    public boolean revoke(String realmId, String userId, String targetType, String targetId) {
+        RealmModel realm = session.realms().getRealm(realmId);
+        if (realm == null) return false;
+        UserModel user = session.users().getUserById(realm, userId);
+        if (user == null) return false;
+        try {
+            if ("ROLE".equalsIgnoreCase(targetType)) {
+                RoleModel role = realm.getRole(targetId);
+                if (role == null) return false;
+                user.deleteRoleMapping(role);
+                return true;
+            }
+            if ("GROUP".equalsIgnoreCase(targetType)) {
+                GroupModel group = realm.getGroupById(targetId);
+                if (group == null) return false;
+                user.leaveGroup(group);
+                return true;
+            }
+        } catch (RuntimeException e) {
+            LOG.errorf(e, "revocation failed (user=%s, %s:%s)", userId, targetType, targetId);
+            return false;
+        }
+        return false;
+    }
 }

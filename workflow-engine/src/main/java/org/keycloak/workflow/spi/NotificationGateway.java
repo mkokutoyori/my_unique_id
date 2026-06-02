@@ -11,4 +11,10 @@ public interface NotificationGateway {
 
     void notify(WorkflowInstance instance, WorkflowStepInstance step,
                 Kind kind, Enums.NotificationChannel channel, String target);
+
+    /** Webhook variant carrying the HMAC shared secret (may be null). */
+    default void notify(WorkflowInstance instance, WorkflowStepInstance step,
+                        Kind kind, Enums.NotificationChannel channel, String target, String secret) {
+        notify(instance, step, kind, channel, target);
+    }
 }

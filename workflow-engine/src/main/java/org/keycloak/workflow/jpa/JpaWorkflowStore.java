@@ -5,12 +5,18 @@ import jakarta.persistence.TypedQuery;
 import org.keycloak.connections.jpa.JpaConnectionProvider;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.util.JsonSerialization;
+import org.keycloak.workflow.jpa.entities.DelegationEntity;
+import org.keycloak.workflow.jpa.entities.RevocationJobEntity;
+import org.keycloak.workflow.jpa.entities.SodPolicyEntity;
 import org.keycloak.workflow.jpa.entities.WorkflowAuditEntity;
 import org.keycloak.workflow.jpa.entities.WorkflowDefinitionEntity;
 import org.keycloak.workflow.jpa.entities.WorkflowInstanceEntity;
 import org.keycloak.workflow.model.AuditEntry;
 import org.keycloak.workflow.model.BusinessCalendar;
+import org.keycloak.workflow.model.Delegation;
 import org.keycloak.workflow.model.Enums;
+import org.keycloak.workflow.model.RevocationJob;
+import org.keycloak.workflow.model.SodPolicy;
 import org.keycloak.workflow.model.WorkflowDefinition;
 import org.keycloak.workflow.model.WorkflowInstance;
 import org.keycloak.workflow.model.WorkflowStep;
@@ -52,6 +58,9 @@ public class JpaWorkflowStore implements WorkflowStore {
         e.setActive(def.isActive());
         e.setFallbackGroupId(def.getFallbackGroupId());
         e.setCalendarId(def.getCalendarId());
+        e.setValidityMinutes(def.getValidityMinutes());
+        e.setRequireJustification(def.isRequireJustification());
+        e.setRiskScoreExpression(def.getRiskScoreExpression());
         e.setStepsJson(writeJson(def.getSteps()));
         em().merge(e);
     }
@@ -82,6 +91,9 @@ public class JpaWorkflowStore implements WorkflowStore {
         d.setActive(e.isActive());
         d.setFallbackGroupId(e.getFallbackGroupId());
         d.setCalendarId(e.getCalendarId());
+        d.setValidityMinutes(e.getValidityMinutes());
+        d.setRequireJustification(e.isRequireJustification());
+        d.setRiskScoreExpression(e.getRiskScoreExpression());
         d.setSteps(readJson(e.getStepsJson(), WorkflowStep[].class));
         return d;
     }
@@ -109,6 +121,9 @@ public class JpaWorkflowStore implements WorkflowStore {
             e.setCurrentDeadline(null);
         }
         e.setStepsJson(writeJson(inst.getStepInstances()));
+        e.setJustification(inst.getJustification());
+        e.setRiskScore(inst.getRiskScore());
+        e.setExpiresAt(inst.getExpiresAt());
         em().merge(e);
     }
 
@@ -168,6 +183,9 @@ public class JpaWorkflowStore implements WorkflowStore {
         i.setCompletedAt(e.getCompletedAt());
         i.setCurrentStepIndex(e.getCurrentStepIndex());
         i.setStepInstances(readJson(e.getStepsJson(), WorkflowStepInstance[].class));
+        i.setJustification(e.getJustification());
+        i.setRiskScore(e.getRiskScore());
+        i.setExpiresAt(e.getExpiresAt());
         return i;
     }
 
@@ -213,6 +231,150 @@ public class JpaWorkflowStore implements WorkflowStore {
     public Optional<BusinessCalendar> getCalendar(String id) {
         // Calendars are loaded from realm attributes / a dedicated table in a follow-up.
         return Optional.empty();
+    }
+
+    // ----- Delegations -----
+
+    @Override
+    public void saveDelegation(Delegation d) {
+        DelegationEntity e = em().find(DelegationEntity.class, d.getId());
+        if (e == null) { e = new DelegationEntity(); e.setId(d.getId()); }
+        e.setRealmId(d.getRealmId());
+        e.setDelegatorId(d.getDelegatorId());
+        e.setDelegateId(d.getDelegateId());
+        e.setFromInstant(d.getFromInstant());
+        e.setToInstant(d.getToInstant());
+        e.setActive(d.isActive());
+        e.setReason(d.getReason());
+        em().merge(e);
+    }
+
+    @Override
+    public List<Delegation> findActiveDelegationsFor(String realmId, String delegatorId) {
+        return em().createQuery(
+                "select d from DelegationEntity d where d.realmId=:r and d.delegatorId=:u and d.active=true",
+                DelegationEntity.class)
+                .setParameter("r", realmId).setParameter("u", delegatorId)
+                .getResultStream().map(this::toDelegation).toList();
+    }
+
+    @Override
+    public List<Delegation> findDelegationsByDelegate(String realmId, String delegateId) {
+        return em().createQuery(
+                "select d from DelegationEntity d where d.realmId=:r and d.delegateId=:u and d.active=true",
+                DelegationEntity.class)
+                .setParameter("r", realmId).setParameter("u", delegateId)
+                .getResultStream().map(this::toDelegation).toList();
+    }
+
+    private Delegation toDelegation(DelegationEntity e) {
+        Delegation d = new Delegation();
+        d.setId(e.getId()); d.setRealmId(e.getRealmId());
+        d.setDelegatorId(e.getDelegatorId()); d.setDelegateId(e.getDelegateId());
+        d.setFromInstant(e.getFromInstant()); d.setToInstant(e.getToInstant());
+        d.setActive(e.isActive()); d.setReason(e.getReason());
+        return d;
+    }
+
+    // ----- SoD policies -----
+
+    @Override
+    public void saveSodPolicy(SodPolicy p) {
+        SodPolicyEntity e = em().find(SodPolicyEntity.class, p.getId());
+        if (e == null) { e = new SodPolicyEntity(); e.setId(p.getId()); }
+        e.setRealmId(p.getRealmId()); e.setName(p.getName()); e.setActive(p.isActive());
+        e.setConflictsJson(writeJson(p.getConflicts()));
+        em().merge(e);
+    }
+
+    @Override
+    public List<SodPolicy> findActiveSodPolicies(String realmId) {
+        return em().createQuery(
+                "select p from SodPolicyEntity p where p.realmId=:r and p.active=true",
+                SodPolicyEntity.class)
+                .setParameter("r", realmId)
+                .getResultStream().map(this::toSodPolicy).toList();
+    }
+
+    private SodPolicy toSodPolicy(SodPolicyEntity e) {
+        SodPolicy p = new SodPolicy();
+        p.setId(e.getId()); p.setRealmId(e.getRealmId());
+        p.setName(e.getName()); p.setActive(e.isActive());
+        p.setConflicts(readJson(e.getConflictsJson(), SodPolicy.Conflict[].class));
+        return p;
+    }
+
+    // ----- Revocation jobs -----
+
+    @Override
+    public void saveRevocationJob(RevocationJob job) {
+        RevocationJobEntity e = em().find(RevocationJobEntity.class, job.getId());
+        if (e == null) { e = new RevocationJobEntity(); e.setId(job.getId()); }
+        e.setRealmId(job.getRealmId()); e.setInstanceId(job.getInstanceId());
+        e.setUserId(job.getUserId());
+        e.setTargetType(job.getTargetType()); e.setTargetId(job.getTargetId());
+        e.setRevokeAt(job.getRevokeAt());
+        e.setStatus(job.getStatus().name()); e.setAttempts(job.getAttempts());
+        em().merge(e);
+    }
+
+    @Override
+    public List<RevocationJob> findDueRevocations(Instant threshold) {
+        return em().createQuery(
+                "select j from RevocationJobEntity j where j.status='SCHEDULED' and j.revokeAt<=:t",
+                RevocationJobEntity.class)
+                .setParameter("t", threshold)
+                .getResultStream().map(this::toRevocation).toList();
+    }
+
+    private RevocationJob toRevocation(RevocationJobEntity e) {
+        RevocationJob j = new RevocationJob();
+        j.setId(e.getId()); j.setRealmId(e.getRealmId()); j.setInstanceId(e.getInstanceId());
+        j.setUserId(e.getUserId());
+        j.setTargetType(e.getTargetType()); j.setTargetId(e.getTargetId());
+        j.setRevokeAt(e.getRevokeAt()); j.setAttempts(e.getAttempts());
+        j.setStatus(RevocationJob.Status.valueOf(e.getStatus()));
+        return j;
+    }
+
+    // ----- Metrics -----
+
+    @Override
+    public long countInstancesByStatus(String realmId, String status) {
+        return em().createQuery(
+                "select count(i) from WorkflowInstanceEntity i where i.realmId=:r and i.status=:s",
+                Long.class)
+                .setParameter("r", realmId).setParameter("s", status)
+                .getSingleResult();
+    }
+
+    @Override
+    public long countSlaBreaches(String realmId, Instant since) {
+        return em().createQuery(
+                "select count(a) from WorkflowAuditEntity a where a.realmId=:r and a.action='ESCALATED' and a.at>=:t",
+                Long.class)
+                .setParameter("r", realmId).setParameter("t", since)
+                .getSingleResult();
+    }
+
+    @Override
+    public double avgApprovalMinutes(String realmId, Instant since) {
+        // Portable across DBs: compute the average in Java.
+        List<Object[]> rows = em().createQuery(
+                "select i.submittedAt, i.completedAt from WorkflowInstanceEntity i " +
+                "where i.realmId=:r and i.status='APPROVED' and i.completedAt>=:t",
+                Object[].class)
+                .setParameter("r", realmId).setParameter("t", since)
+                .getResultList();
+        if (rows.isEmpty()) return 0.0;
+        long total = 0; int count = 0;
+        for (Object[] row : rows) {
+            Instant a = (Instant) row[0]; Instant b = (Instant) row[1];
+            if (a == null || b == null) continue;
+            total += java.time.Duration.between(a, b).toMinutes();
+            count++;
+        }
+        return count == 0 ? 0.0 : (double) total / count;
     }
 
     // ----- JSON helpers -----

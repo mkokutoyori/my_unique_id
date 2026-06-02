@@ -26,6 +26,10 @@ public class WorkflowInstanceEntity {
     private int currentStepIndex;
     /** Denormalized cursor used by the SLA scheduler. */
     private Instant currentDeadline;
+    @Column(length = 2000)
+    private String justification;
+    private Integer riskScore;
+    private Instant expiresAt;
 
     /** Serialized JSON of step instances. */
     @Lob @Column(name = "steps_json")
@@ -57,4 +61,10 @@ public class WorkflowInstanceEntity {
     public void setCurrentDeadline(Instant d) { this.currentDeadline = d; }
     public String getStepsJson() { return stepsJson; }
     public void setStepsJson(String s) { this.stepsJson = s; }
+    public String getJustification() { return justification; }
+    public void setJustification(String j) { this.justification = j; }
+    public Integer getRiskScore() { return riskScore; }
+    public void setRiskScore(Integer r) { this.riskScore = r; }
+    public Instant getExpiresAt() { return expiresAt; }
+    public void setExpiresAt(Instant e) { this.expiresAt = e; }
 }

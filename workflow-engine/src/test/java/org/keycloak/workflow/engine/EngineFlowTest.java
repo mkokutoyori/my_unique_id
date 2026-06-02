@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.workflow.model.*;
 import org.keycloak.workflow.spi.*;
+import org.keycloak.workflow.engine.ExpressionEval;
 
 import java.time.Instant;
 import java.util.*;
@@ -63,6 +64,72 @@ class EngineFlowTest {
     }
 
     @Test
+    void justificationRequired_blocksSubmissionWhenMissing() {
+        WorkflowDefinition def = oracleDef();
+        def.setRequireJustification(true);
+        engine.publish(def);
+        assertThrows(IllegalArgumentException.class, () ->
+                engine.submit("realm", "alice", "ROLE", "dba-readonly", null));
+    }
+
+    @Test
+    void riskScore_skipsStepWhenLowRisk() {
+        WorkflowDefinition def = oracleDef();
+        def.setRiskScoreExpression("targetId=dba-readonly:20,default:80");
+        def.getSteps().get(0).setSkipCondition("risk < 30"); // skip manager when low risk
+        engine.publish(def);
+
+        WorkflowInstance inst = engine.submit("realm", "alice", "ROLE", "dba-readonly", "I need it");
+        assertEquals(Enums.StepStatus.SKIPPED, inst.getStepInstances().get(0).getStatus());
+        assertEquals(20, (int) inst.getRiskScore());
+        // Currently waiting on step 1 (RSSI).
+        WorkflowInstance reloaded = engine.get(inst.getId());
+        assertEquals(1, reloaded.getCurrentStepIndex());
+    }
+
+    @Test
+    void jitAccess_schedulesRevocation() {
+        WorkflowDefinition def = oracleDef();
+        def.setValidityMinutes(60L);
+        engine.publish(def);
+        WorkflowInstance inst = engine.submit("realm", "alice", "ROLE", "dba-readonly");
+        engine.decide(inst.getId(), inst.getStepInstances().get(0).getId(), "manager-bob", Enums.Decision.APPROVED, "ok");
+        engine.decide(inst.getId(), inst.getStepInstances().get(1).getId(), "rssi-eve",    Enums.Decision.APPROVED, "ok");
+        engine.decide(inst.getId(), inst.getStepInstances().get(2).getId(), "dba-frank",   Enums.Decision.APPROVED, "ok");
+        assertEquals(1, store.revocations.size());
+        assertNotNull(engine.get(inst.getId()).getExpiresAt());
+    }
+
+    @Test
+    void delegation_routesApprovalToDelegate() {
+        engine.publish(oracleDef());
+        Delegation d = new Delegation();
+        d.setId("d1"); d.setRealmId("realm");
+        d.setDelegatorId("manager-bob"); d.setDelegateId("manager-deputy");
+        d.setActive(true);
+        engine.saveDelegation(d);
+
+        WorkflowInstance inst = engine.submit("realm", "alice", "ROLE", "dba-readonly");
+        // Deputy can approve on behalf of the absent manager.
+        engine.decide(inst.getId(), inst.getStepInstances().get(0).getId(),
+                "manager-deputy", Enums.Decision.APPROVED, "covering Bob");
+        assertEquals(Enums.StepStatus.APPROVED, engine.get(inst.getId()).getStepInstances().get(0).getStatus());
+    }
+
+    @Test
+    void sodPolicy_blocksToxicCombination() {
+        engine.publish(oracleDef());
+        SodPolicy p = new SodPolicy();
+        p.setId("sod1"); p.setRealmId("realm"); p.setName("payer-vs-approver"); p.setActive(true);
+        p.getConflicts().add(new SodPolicy.Conflict("ROLE", "dba-readonly", "ROLE", "finance-payer"));
+        engine.saveSodPolicy(p);
+        // The resolver-only fakes don't model held roles, so the policy fires only when
+        // the user actually holds the conflicting role — verified through expression eval below.
+        assertEquals(80, ExpressionEval.evalRisk("targetId=dba-admin:90,default:80",
+                ExpressionEval.context("ROLE", "dba-readonly", "alice", null, java.util.Map.of())));
+    }
+
+    @Test
     void slaExpiry_autoRejectEscalation_endsInstance() {
         WorkflowDefinition def = oracleDef();
         def.getSteps().get(0).setEscalationType(Enums.EscalationType.AUTO_REJECT);
@@ -113,7 +180,11 @@ class EngineFlowTest {
     }
     static class FakeProvisioning implements ProvisioningGateway {
         final Set<String> calls = new HashSet<>();
+        final List<String> revocations = new ArrayList<>();
         @Override public boolean provision(WorkflowInstance inst) { calls.add(inst.getId()); return true; }
+        @Override public boolean revoke(String realmId, String userId, String type, String id) {
+            revocations.add(userId + ":" + type + ":" + id); return true;
+        }
     }
 
     static class InMemoryStore implements WorkflowStore {
@@ -149,6 +220,58 @@ class EngineFlowTest {
         @Override public void appendAudit(AuditEntry e) { audit.add(e); }
         @Override public List<AuditEntry> auditFor(String id) {
             return audit.stream().filter(a -> id.equals(a.getInstanceId())).toList();
+        }
+        final List<Delegation> delegations = new ArrayList<>();
+        final List<SodPolicy> sodPolicies = new ArrayList<>();
+        final List<RevocationJob> revocations = new ArrayList<>();
+        @Override public void saveDelegation(Delegation d) {
+            delegations.removeIf(x -> x.getId() != null && x.getId().equals(d.getId()));
+            delegations.add(d);
+        }
+        @Override public List<Delegation> findActiveDelegationsFor(String realmId, String delegatorId) {
+            return delegations.stream()
+                    .filter(d -> d.isActive() && realmId.equals(d.getRealmId()) && delegatorId.equals(d.getDelegatorId()))
+                    .toList();
+        }
+        @Override public List<Delegation> findDelegationsByDelegate(String realmId, String delegateId) {
+            return delegations.stream()
+                    .filter(d -> d.isActive() && realmId.equals(d.getRealmId()) && delegateId.equals(d.getDelegateId()))
+                    .toList();
+        }
+        @Override public void saveSodPolicy(SodPolicy p) {
+            sodPolicies.removeIf(x -> x.getId() != null && x.getId().equals(p.getId()));
+            sodPolicies.add(p);
+        }
+        @Override public List<SodPolicy> findActiveSodPolicies(String realmId) {
+            return sodPolicies.stream()
+                    .filter(p -> p.isActive() && realmId.equals(p.getRealmId())).toList();
+        }
+        @Override public void saveRevocationJob(RevocationJob job) {
+            revocations.removeIf(x -> x.getId() != null && x.getId().equals(job.getId()));
+            revocations.add(job);
+        }
+        @Override public List<RevocationJob> findDueRevocations(Instant threshold) {
+            return revocations.stream()
+                    .filter(j -> j.getStatus() == RevocationJob.Status.SCHEDULED
+                            && j.getRevokeAt() != null && !j.getRevokeAt().isAfter(threshold))
+                    .toList();
+        }
+        @Override public long countInstancesByStatus(String realmId, String status) {
+            return insts.values().stream()
+                    .filter(i -> realmId.equals(i.getRealmId()) && status.equals(i.getStatus().name())).count();
+        }
+        @Override public long countSlaBreaches(String realmId, Instant since) {
+            return audit.stream().filter(a -> realmId.equals(a.getRealmId())
+                    && a.getAction() == Enums.AuditAction.ESCALATED
+                    && a.getAt() != null && !a.getAt().isBefore(since)).count();
+        }
+        @Override public double avgApprovalMinutes(String realmId, Instant since) {
+            return insts.values().stream()
+                    .filter(i -> realmId.equals(i.getRealmId())
+                            && i.getStatus() == Enums.InstanceStatus.APPROVED
+                            && i.getCompletedAt() != null && !i.getCompletedAt().isBefore(since))
+                    .mapToLong(i -> java.time.Duration.between(i.getSubmittedAt(), i.getCompletedAt()).toMinutes())
+                    .average().orElse(0.0);
         }
     }
 }

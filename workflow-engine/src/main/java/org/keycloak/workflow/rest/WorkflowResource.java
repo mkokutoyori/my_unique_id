@@ -18,7 +18,9 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.services.managers.AppAuthManager;
 import org.keycloak.services.managers.AuthenticationManager.AuthResult;
+import org.keycloak.workflow.model.Delegation;
 import org.keycloak.workflow.model.Enums;
+import org.keycloak.workflow.model.SodPolicy;
 import org.keycloak.workflow.model.WorkflowDefinition;
 import org.keycloak.workflow.model.WorkflowInstance;
 import org.keycloak.workflow.spi.WorkflowEngineProvider;
@@ -110,7 +112,8 @@ public class WorkflowResource {
     @Produces(MediaType.APPLICATION_JSON)
     public WorkflowInstance submit(Map<String, String> body) {
         String userId = requireUser();
-        return engine().submit(realmId(), userId, body.get("targetType"), body.get("targetId"));
+        return engine().submit(realmId(), userId, body.get("targetType"), body.get("targetId"),
+                body.get("justification"));
     }
 
     @GET
@@ -162,4 +165,35 @@ public class WorkflowResource {
         engine().cancel(id, requireUser(), body == null ? null : body.get("reason"));
         return Response.noContent().build();
     }
+
+    // ----- Delegations (out-of-office) -----
+
+    @GET @Path("/delegations") @Produces(MediaType.APPLICATION_JSON)
+    public List<Delegation> myDelegations() {
+        return engine().listDelegations(realmId(), requireUser());
+    }
+
+    @POST @Path("/delegations") @Consumes(MediaType.APPLICATION_JSON) @Produces(MediaType.APPLICATION_JSON)
+    public Delegation createDelegation(Delegation d) {
+        d.setRealmId(realmId());
+        d.setDelegatorId(requireUser()); // can only delegate own approvals
+        d.setActive(true);
+        engine().saveDelegation(d);
+        return d;
+    }
+
+    // ----- SoD policies (admin) -----
+
+    @GET @Path("/sod-policies") @Produces(MediaType.APPLICATION_JSON)
+    public List<SodPolicy> sodPolicies() { requireUser(); return engine().listSodPolicies(realmId()); }
+
+    @POST @Path("/sod-policies") @Consumes(MediaType.APPLICATION_JSON) @Produces(MediaType.APPLICATION_JSON)
+    public SodPolicy saveSod(SodPolicy p) {
+        requireUser(); p.setRealmId(realmId()); p.setActive(true); engine().saveSodPolicy(p); return p;
+    }
+
+    // ----- Metrics dashboard -----
+
+    @GET @Path("/metrics") @Produces(MediaType.APPLICATION_JSON)
+    public Map<String, Object> metrics() { requireUser(); return engine().metrics(realmId()); }
 }

@@ -34,10 +34,16 @@ public class MultiChannelNotificationGateway implements NotificationGateway {
     @Override
     public void notify(WorkflowInstance inst, WorkflowStepInstance step,
                        Kind kind, Enums.NotificationChannel channel, String target) {
+        notify(inst, step, kind, channel, target, null);
+    }
+
+    @Override
+    public void notify(WorkflowInstance inst, WorkflowStepInstance step,
+                       Kind kind, Enums.NotificationChannel channel, String target, String secret) {
         if (channel == Enums.NotificationChannel.EMAIL) {
             sendEmail(inst, step, kind, target);
         } else if (channel == Enums.NotificationChannel.WEBHOOK) {
-            sendWebhook(inst, step, kind, target);
+            sendWebhook(inst, step, kind, target, secret);
         }
     }
 
@@ -62,19 +68,22 @@ public class MultiChannelNotificationGateway implements NotificationGateway {
         }
     }
 
-    private void sendWebhook(WorkflowInstance inst, WorkflowStepInstance si, Kind kind, String url) {
+    private void sendWebhook(WorkflowInstance inst, WorkflowStepInstance si, Kind kind, String url, String secret) {
         if (url == null || url.isBlank()) return;
         String body = String.format(
                 "{\"instanceId\":\"%s\",\"stepId\":\"%s\",\"kind\":\"%s\",\"target\":\"%s:%s\",\"deadline\":\"%s\"}",
                 inst.getId(), si.getStepId(), kind, inst.getTargetType(), inst.getTargetId(), si.getDeadline());
         try {
-            HttpRequest req = HttpRequest.newBuilder()
+            HttpRequest.Builder b = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofSeconds(5))
                     .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                    .header("X-WF-Event", kind.name())
+                    .POST(HttpRequest.BodyPublishers.ofString(body));
+            if (secret != null && !secret.isBlank()) {
+                b.header("X-WF-Signature", HmacUtil.sign(body, secret));
+            }
+            HttpResponse<String> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 400) {
                 LOG.warnf("webhook returned %d for instance %s", resp.statusCode(), inst.getId());
             }

@@ -27,6 +27,19 @@ public class WorkflowDefinition {
     /** Business calendar id; null => 24/7. */
     private String calendarId;
 
+    /** JIT access: validity in minutes after provisioning; null/0 => permanent. */
+    private Long validityMinutes;
+
+    /** Reject the request if the requester does not provide a justification. */
+    private boolean requireJustification;
+
+    /**
+     * Optional expression evaluated against the request context to produce a numeric
+     * risk score (0–100). Used by {@link WorkflowStep#getSkipCondition()}.
+     * Supported tokens: {@code target}, {@code requester}, {@code attr.<name>}.
+     */
+    private String riskScoreExpression;
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getRealmId() { return realmId; }
@@ -47,4 +60,10 @@ public class WorkflowDefinition {
     public void setFallbackGroupId(String g) { this.fallbackGroupId = g; }
     public String getCalendarId() { return calendarId; }
     public void setCalendarId(String c) { this.calendarId = c; }
+    public Long getValidityMinutes() { return validityMinutes; }
+    public void setValidityMinutes(Long v) { this.validityMinutes = v; }
+    public boolean isRequireJustification() { return requireJustification; }
+    public void setRequireJustification(boolean r) { this.requireJustification = r; }
+    public String getRiskScoreExpression() { return riskScoreExpression; }
+    public void setRiskScoreExpression(String e) { this.riskScoreExpression = e; }
 }

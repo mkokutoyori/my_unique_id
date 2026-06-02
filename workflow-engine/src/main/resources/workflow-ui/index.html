@@ -56,6 +56,9 @@
   <button data-tab="mine">Mes demandes</button>
   <button data-tab="new">Nouvelle demande</button>
   <button data-tab="designer">Designer (admin)</button>
+  <button data-tab="delegations">Délégation</button>
+  <button data-tab="sod">Politiques SoD</button>
+  <button data-tab="metrics">Métriques</button>
 </nav>
 
 <main>
@@ -84,7 +87,48 @@
       <select id="newTargetType"><option value="ROLE">ROLE</option><option value="GROUP">GROUP</option></select>
       <label>Identifiant de la cible (id du rôle ou du groupe)</label>
       <input id="newTargetId" placeholder="ex: dba-readonly"/>
+      <label>Justification métier</label>
+      <textarea id="newJustif" rows="3" placeholder="Pourquoi avez-vous besoin de cet accès ? (requis si le workflow l'exige)"></textarea>
       <div style="margin-top:14px"><button class="primary" onclick="submitRequest()">Envoyer</button></div>
+    </div>
+  </section>
+
+  <section id="tab-delegations">
+    <div class="card" style="max-width:680px">
+      <h3>Déléguer mes approbations (absence/congés)</h3>
+      <div class="row">
+        <div><label>Délégué (user id)</label><input id="delUser"/></div>
+        <div><label>Raison</label><input id="delReason" placeholder="vacances, mission..."/></div>
+        <div><label>Du</label><input id="delFrom" type="datetime-local"/></div>
+        <div><label>Au</label><input id="delTo" type="datetime-local"/></div>
+      </div>
+      <div style="margin-top:14px"><button class="primary" onclick="createDelegation()">Créer la délégation</button></div>
+      <h4 style="margin-top:24px">Délégations actives</h4>
+      <table id="delTable"><thead><tr><th>Délégateur</th><th>Délégué</th><th>Du</th><th>Au</th><th>Raison</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section id="tab-sod">
+    <div class="card">
+      <h3>Politiques de Séparation des Tâches (combinaisons toxiques)</h3>
+      <div class="row">
+        <div><label>Nom de la politique</label><input id="sodName" placeholder="ex: Payer vs Approver"/></div>
+        <div></div>
+        <div><label>Type A</label><select id="sodTypeA"><option>ROLE</option><option>GROUP</option></select></div>
+        <div><label>Ref A</label><input id="sodRefA"/></div>
+        <div><label>Type B</label><select id="sodTypeB"><option>ROLE</option><option>GROUP</option></select></div>
+        <div><label>Ref B</label><input id="sodRefB"/></div>
+      </div>
+      <div style="margin-top:14px"><button class="primary" onclick="saveSod()">Enregistrer</button></div>
+      <h4 style="margin-top:24px">Politiques actives</h4>
+      <table id="sodTable"><thead><tr><th>Nom</th><th>Conflits</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section id="tab-metrics">
+    <div class="card">
+      <h3>Tableau de bord — gouvernance</h3>
+      <div class="grid" id="metricsGrid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))"></div>
     </div>
   </section>
 
@@ -97,6 +141,11 @@
         <div><label>Target type</label>
           <select id="dTargetType"><option>ROLE</option><option>GROUP</option></select></div>
         <div><label>Target ID</label><input id="dTargetId" value="dba-readonly"/></div>
+        <div><label>Validité JIT (min, 0 = permanent)</label><input id="dValidity" type="number" value="0"/></div>
+        <div><label>Justification obligatoire</label>
+          <select id="dRequireJ"><option value="false">non</option><option value="true">oui</option></select></div>
+        <div style="grid-column:span 2"><label>Expression de risque (ex: targetId=dba-admin:90,default:30)</label>
+          <input id="dRisk" placeholder="optionnel"/></div>
       </div>
       <label style="margin-top:14px">Étapes</label>
       <div id="stepsBuilder"></div>
@@ -140,8 +189,11 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('section').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
   document.getElementById('tab-' + b.dataset.tab).classList.add('active');
-  if (b.dataset.tab === 'inbox') loadInbox();
-  if (b.dataset.tab === 'mine')  loadMine();
+  if (b.dataset.tab === 'inbox')       loadInbox();
+  if (b.dataset.tab === 'mine')        loadMine();
+  if (b.dataset.tab === 'delegations') loadDelegations();
+  if (b.dataset.tab === 'sod')         loadSod();
+  if (b.dataset.tab === 'metrics')     loadMetrics();
 });
 
 // ----- inbox -----
@@ -196,9 +248,67 @@ async function loadMine() {
 async function submitRequest() {
   try {
     const body = { targetType: document.getElementById('newTargetType').value,
-                   targetId: document.getElementById('newTargetId').value };
+                   targetId:   document.getElementById('newTargetId').value,
+                   justification: document.getElementById('newJustif').value };
     await api('POST', '/requests', body);
     toast('Demande soumise'); document.querySelector('nav button[data-tab=mine]').click();
+  } catch (e) { toast(e.message); }
+}
+
+// ----- delegations -----
+async function loadDelegations() {
+  try {
+    const items = await api('GET', '/delegations');
+    const tb = document.querySelector('#delTable tbody'); tb.innerHTML = '';
+    items.forEach(d => tb.insertAdjacentHTML('beforeend',
+      `<tr><td>${d.delegatorId}</td><td>${d.delegateId}</td><td>${when(d.fromInstant)}</td><td>${when(d.toInstant)}</td><td>${d.reason||''}</td></tr>`));
+  } catch (e) { toast(e.message); }
+}
+async function createDelegation() {
+  try {
+    const body = {
+      delegateId: document.getElementById('delUser').value,
+      reason: document.getElementById('delReason').value,
+      fromInstant: document.getElementById('delFrom').value ? new Date(document.getElementById('delFrom').value).toISOString() : null,
+      toInstant:   document.getElementById('delTo').value   ? new Date(document.getElementById('delTo').value).toISOString()   : null,
+    };
+    await api('POST', '/delegations', body); toast('Délégation enregistrée'); loadDelegations();
+  } catch (e) { toast(e.message); }
+}
+
+// ----- SoD -----
+async function loadSod() {
+  try {
+    const items = await api('GET', '/sod-policies');
+    const tb = document.querySelector('#sodTable tbody'); tb.innerHTML = '';
+    items.forEach(p => {
+      const conflicts = (p.conflicts||[]).map(c => `${c.typeA}:${c.refA} ⛔ ${c.typeB}:${c.refB}`).join('<br>');
+      tb.insertAdjacentHTML('beforeend', `<tr><td>${p.name}</td><td>${conflicts}</td></tr>`);
+    });
+  } catch (e) { toast(e.message); }
+}
+async function saveSod() {
+  try {
+    const body = {
+      name: document.getElementById('sodName').value,
+      conflicts: [{
+        typeA: document.getElementById('sodTypeA').value, refA: document.getElementById('sodRefA').value,
+        typeB: document.getElementById('sodTypeB').value, refB: document.getElementById('sodRefB').value
+      }]
+    };
+    await api('POST', '/sod-policies', body); toast('Politique enregistrée'); loadSod();
+  } catch (e) { toast(e.message); }
+}
+
+// ----- metrics -----
+async function loadMetrics() {
+  try {
+    const m = await api('GET', '/metrics');
+    const g = document.getElementById('metricsGrid'); g.innerHTML = '';
+    Object.entries(m).forEach(([k, v]) => {
+      g.insertAdjacentHTML('beforeend',
+        `<div class="card"><div class="realm" style="font-size:11px">${k}</div><div style="font-size:24px;font-weight:600;margin-top:6px">${typeof v === 'number' ? Math.round(v*100)/100 : v}</div></div>`);
+    });
   } catch (e) { toast(e.message); }
 }
 
@@ -222,6 +332,8 @@ function addStep(initial) {
       <div><label>Canaux</label>
         <select data-k="channels" multiple size="2"><option selected>EMAIL</option><option>WEBHOOK</option></select></div>
       <div><label>Webhook URL</label><input data-k="webhookUrl" placeholder="https://..."/></div>
+      <div><label>Secret HMAC webhook</label><input data-k="webhookSecret" type="password" placeholder="optionnel"/></div>
+      <div><label>Skip condition (ex: risk &lt; 30)</label><input data-k="skipCondition" placeholder="optionnel"/></div>
       <div><label>Escalade</label>
         <select data-k="escalationType"><option>REASSIGN</option><option>AUTO_APPROVE</option><option>AUTO_REJECT</option></select></div>
     </div>`;
@@ -238,18 +350,23 @@ function readStep(wrap, order) {
     approverType: v('approverType'), approverRef: v('approverRef'),
     slaMinutes: Number(v('slaMinutes')),
     reminderOffsetsMinutes: reminders,
-    channels, webhookUrl: v('webhookUrl'),
+    channels, webhookUrl: v('webhookUrl'), webhookSecret: v('webhookSecret'),
+    skipCondition: v('skipCondition'),
     escalationType: v('escalationType')
   };
 }
 async function publishDef() {
   const steps = Array.from(document.querySelectorAll('#stepsBuilder .step-card'))
                      .map((w, i) => readStep(w, i));
+  const validity = Number(document.getElementById('dValidity').value) || 0;
   const def = {
     name: document.getElementById('dName').value,
     targetType: document.getElementById('dTargetType').value,
     targetId: document.getElementById('dTargetId').value,
     fallbackGroupId: document.getElementById('dFallback').value || null,
+    validityMinutes: validity > 0 ? validity : null,
+    requireJustification: document.getElementById('dRequireJ').value === 'true',
+    riskScoreExpression: document.getElementById('dRisk').value || null,
     steps
   };
   try { const out = await api('POST', '/definitions', def);

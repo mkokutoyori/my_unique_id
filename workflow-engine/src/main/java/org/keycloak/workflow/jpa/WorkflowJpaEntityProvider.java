@@ -16,7 +16,10 @@ public class WorkflowJpaEntityProvider implements JpaEntityProvider {
         return Arrays.asList(
                 WorkflowDefinitionEntity.class,
                 WorkflowInstanceEntity.class,
-                WorkflowAuditEntity.class);
+                WorkflowAuditEntity.class,
+                org.keycloak.workflow.jpa.entities.DelegationEntity.class,
+                org.keycloak.workflow.jpa.entities.SodPolicyEntity.class,
+                org.keycloak.workflow.jpa.entities.RevocationJobEntity.class);
     }
 
     @Override

@@ -26,6 +26,15 @@ public class WorkflowInstance {
     private int currentStepIndex;
     private List<WorkflowStepInstance> stepInstances = new ArrayList<>();
 
+    /** Business justification provided by the requester. */
+    private String justification;
+
+    /** Risk score computed at submission time (0–100), null if not configured. */
+    private Integer riskScore;
+
+    /** When the grant should be auto-revoked (JIT); null => permanent. */
+    private Instant expiresAt;
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getRealmId() { return realmId; }
@@ -50,4 +59,10 @@ public class WorkflowInstance {
     public void setCurrentStepIndex(int i) { this.currentStepIndex = i; }
     public List<WorkflowStepInstance> getStepInstances() { return stepInstances; }
     public void setStepInstances(List<WorkflowStepInstance> s) { this.stepInstances = s; }
+    public String getJustification() { return justification; }
+    public void setJustification(String j) { this.justification = j; }
+    public Integer getRiskScore() { return riskScore; }
+    public void setRiskScore(Integer r) { this.riskScore = r; }
+    public Instant getExpiresAt() { return expiresAt; }
+    public void setExpiresAt(Instant e) { this.expiresAt = e; }
 }

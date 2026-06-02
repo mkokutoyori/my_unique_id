@@ -25,6 +25,15 @@ public class WorkflowStep {
     private List<Enums.NotificationChannel> channels = new ArrayList<>();
     /** Webhook URL when WEBHOOK channel is used. */
     private String webhookUrl;
+    /** HMAC-SHA256 shared secret; when set, requests carry X-WF-Signature. */
+    private String webhookSecret;
+
+    /**
+     * Optional condition; when it evaluates to true the step is skipped (marked
+     * {@code SKIPPED}) and the engine moves on. Examples:
+     * {@code risk &lt; 30}, {@code targetId == "low-impact"}, {@code attr.country == "FR"}.
+     */
+    private String skipCondition;
 
     private Enums.EscalationType escalationType = Enums.EscalationType.REASSIGN;
     private Enums.ApproverType escalationApproverType;
@@ -50,6 +59,10 @@ public class WorkflowStep {
     public void setChannels(List<Enums.NotificationChannel> c) { this.channels = c; }
     public String getWebhookUrl() { return webhookUrl; }
     public void setWebhookUrl(String w) { this.webhookUrl = w; }
+    public String getWebhookSecret() { return webhookSecret; }
+    public void setWebhookSecret(String s) { this.webhookSecret = s; }
+    public String getSkipCondition() { return skipCondition; }
+    public void setSkipCondition(String c) { this.skipCondition = c; }
     public Enums.EscalationType getEscalationType() { return escalationType; }
     public void setEscalationType(Enums.EscalationType e) { this.escalationType = e; }
     public Enums.ApproverType getEscalationApproverType() { return escalationApproverType; }

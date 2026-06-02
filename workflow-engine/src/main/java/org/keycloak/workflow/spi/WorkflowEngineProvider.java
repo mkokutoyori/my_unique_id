@@ -20,6 +20,28 @@ public interface WorkflowEngineProvider extends Provider {
 
     // --- Request lifecycle ---
     WorkflowInstance submit(String realmId, String requesterId, String targetType, String targetId);
+    /** Submit with a business justification (required when the workflow demands one). */
+    default WorkflowInstance submit(String realmId, String requesterId,
+                                    String targetType, String targetId, String justification) {
+        return submit(realmId, requesterId, targetType, targetId);
+    }
+
+    // --- Delegations ---
+    default void saveDelegation(org.keycloak.workflow.model.Delegation d) {}
+    default java.util.List<org.keycloak.workflow.model.Delegation> listDelegations(String realmId, String userId) {
+        return java.util.List.of();
+    }
+
+    // --- SoD policies ---
+    default void saveSodPolicy(org.keycloak.workflow.model.SodPolicy p) {}
+    default java.util.List<org.keycloak.workflow.model.SodPolicy> listSodPolicies(String realmId) {
+        return java.util.List.of();
+    }
+
+    // --- Metrics ---
+    default java.util.Map<String, Object> metrics(String realmId) {
+        return java.util.Map.of();
+    }
     WorkflowInstance get(String instanceId);
     List<WorkflowInstance> listForApprover(String realmId, String approverUserId);
     List<WorkflowInstance> listForRequester(String realmId, String requesterId);

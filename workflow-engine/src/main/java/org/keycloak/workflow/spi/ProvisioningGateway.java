@@ -10,4 +10,10 @@ public interface ProvisioningGateway {
 
     /** @return true on success; false to mark the instance FAILED and audit. */
     boolean provision(WorkflowInstance instance);
+
+    /**
+     * Revoke a previously granted role/group (JIT expiry, manual cancellation,
+     * re-certification refusal). Default implementation delegates to a sub-task.
+     */
+    boolean revoke(String realmId, String userId, String targetType, String targetId);
 }
