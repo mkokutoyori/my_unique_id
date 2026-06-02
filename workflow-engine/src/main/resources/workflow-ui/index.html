@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<title>Workflow Engine — Console</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  :root { --bg:#0f172a; --panel:#111827; --line:#1f2937; --text:#e5e7eb; --muted:#9ca3af;
+          --primary:#3b82f6; --ok:#10b981; --warn:#f59e0b; --bad:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; }
+  header h1 { margin:0; font-size:16px; font-weight:600; }
+  header .realm { color:var(--muted); font-size:12px; }
+  nav { display:flex; gap:4px; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  nav button { background:transparent; color:var(--text); border:0; padding:8px 14px; border-radius:6px; cursor:pointer; }
+  nav button.active { background:var(--primary); }
+  main { padding:22px; }
+  section { display:none; }
+  section.active { display:block; }
+  .grid { display:grid; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .b-RUNNING  { background:#1e3a8a; color:#bfdbfe; }
+  .b-APPROVED { background:#064e3b; color:#a7f3d0; }
+  .b-REJECTED { background:#7f1d1d; color:#fecaca; }
+  .b-PENDING  { background:#78350f; color:#fde68a; }
+  .b-CANCELLED,.b-FAILED { background:#3f3f46; color:#e5e7eb; }
+  button.primary { background:var(--primary); color:#fff; border:0; padding:7px 14px; border-radius:6px; cursor:pointer; }
+  button.ok { background:var(--ok); color:#022c1d; border:0; padding:6px 12px; border-radius:6px; cursor:pointer; }
+  button.bad { background:var(--bad); color:#3f0000; border:0; padding:6px 12px; border-radius:6px; cursor:pointer; }
+  input,select,textarea { background:#0b1220; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font:inherit; width:100%; }
+  label { display:block; font-size:11px; color:var(--muted); margin:8px 0 4px; text-transform:uppercase; letter-spacing:.04em; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .step-card { border:1px solid var(--line); padding:10px; border-radius:6px; margin-bottom:8px; }
+  .step-head { display:flex; justify-content:space-between; align-items:center; }
+  .empty { color:var(--muted); padding:30px; text-align:center; }
+  #toast { position:fixed; bottom:18px; right:18px; padding:10px 16px; border-radius:6px; background:var(--panel); border:1px solid var(--line); display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Workflow Engine</h1>
+  <span class="realm" id="realmLabel">…</span>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:12px">
+    <span id="userLabel" class="realm"></span>
+    <button onclick="kc.logout()" id="logoutBtn" style="display:none">Déconnexion</button>
+  </div>
+</header>
+
+<nav>
+  <button data-tab="inbox" class="active">Mon inbox</button>
+  <button data-tab="mine">Mes demandes</button>
+  <button data-tab="new">Nouvelle demande</button>
+  <button data-tab="designer">Designer (admin)</button>
+</nav>
+
+<main>
+  <section id="tab-inbox" class="active">
+    <div class="card"><h3>Étapes en attente d'approbation</h3>
+      <table id="inboxTable"><thead>
+        <tr><th>Demandeur</th><th>Cible</th><th>Étape</th><th>Échéance</th><th></th></tr>
+      </thead><tbody></tbody></table>
+      <div class="empty" id="inboxEmpty">Aucune étape en attente.</div>
+    </div>
+  </section>
+
+  <section id="tab-mine">
+    <div class="card"><h3>Mes demandes</h3>
+      <table id="mineTable"><thead>
+        <tr><th>ID</th><th>Cible</th><th>Statut</th><th>Étape courante</th><th>Soumise</th></tr>
+      </thead><tbody></tbody></table>
+      <div class="empty" id="mineEmpty">Vous n'avez aucune demande.</div>
+    </div>
+  </section>
+
+  <section id="tab-new">
+    <div class="card" style="max-width:560px">
+      <h3>Soumettre une demande d'accès</h3>
+      <label>Type de cible</label>
+      <select id="newTargetType"><option value="ROLE">ROLE</option><option value="GROUP">GROUP</option></select>
+      <label>Identifiant de la cible (id du rôle ou du groupe)</label>
+      <input id="newTargetId" placeholder="ex: dba-readonly"/>
+      <div style="margin-top:14px"><button class="primary" onclick="submitRequest()">Envoyer</button></div>
+    </div>
+  </section>
+
+  <section id="tab-designer">
+    <div class="card">
+      <h3>Publier / mettre à jour un workflow</h3>
+      <div class="row">
+        <div><label>Nom</label><input id="dName" value="Oracle access"/></div>
+        <div><label>Fallback group ID</label><input id="dFallback" placeholder="optionnel"/></div>
+        <div><label>Target type</label>
+          <select id="dTargetType"><option>ROLE</option><option>GROUP</option></select></div>
+        <div><label>Target ID</label><input id="dTargetId" value="dba-readonly"/></div>
+      </div>
+      <label style="margin-top:14px">Étapes</label>
+      <div id="stepsBuilder"></div>
+      <button onclick="addStep()" style="margin-top:6px">+ Ajouter une étape</button>
+      <div style="margin-top:16px"><button class="primary" onclick="publishDef()">Publier (crée une nouvelle version)</button></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script src="/js/keycloak.js"></script>
+<script>
+const REALM = '__WF_REALM__';
+const CLIENT = '__WF_CLIENT__';
+document.getElementById('realmLabel').textContent = 'realm: ' + REALM;
+const BASE = `/realms/${REALM}/workflow`;
+
+const kc = new Keycloak({ url: location.origin, realm: REALM, clientId: CLIENT });
+
+async function api(method, path, body) {
+  await kc.updateToken(30);
+  const res = await fetch(BASE + path, {
+    method,
+    headers: { 'Authorization': 'Bearer ' + kc.token, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.status === 204 ? null : res.json();
+}
+function toast(msg) {
+  const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+function badge(s) { return `<span class="badge b-${s}">${s}</span>`; }
+function when(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
+
+// ----- tabs -----
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('section').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  document.getElementById('tab-' + b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'inbox') loadInbox();
+  if (b.dataset.tab === 'mine')  loadMine();
+});
+
+// ----- inbox -----
+async function loadInbox() {
+  try {
+    const items = await api('GET', '/requests/inbox');
+    const tb = document.querySelector('#inboxTable tbody'); tb.innerHTML = '';
+    document.getElementById('inboxEmpty').style.display = items.length ? 'none' : 'block';
+    items.forEach(i => {
+      const step = i.stepInstances[i.currentStepIndex];
+      tb.insertAdjacentHTML('beforeend', `
+        <tr>
+          <td>${i.requesterId}</td>
+          <td>${i.targetType}:${i.targetId}</td>
+          <td>${step.stepId} ${badge(step.status)}</td>
+          <td>${when(step.deadline)}</td>
+          <td>
+            <button class="ok" onclick="decide('${i.id}','${step.id}','approve')">Approuver</button>
+            <button class="bad" onclick="decide('${i.id}','${step.id}','reject')">Rejeter</button>
+          </td>
+        </tr>`);
+    });
+  } catch (e) { toast(e.message); }
+}
+async function decide(id, stepId, kind) {
+  const comment = prompt(`${kind === 'approve' ? 'Approbation' : 'Rejet'} — commentaire ?`) || '';
+  try { await api('POST', `/requests/${id}/steps/${stepId}/${kind}`, { comment }); loadInbox(); toast('OK'); }
+  catch (e) { toast(e.message); }
+}
+
+// ----- mine -----
+async function loadMine() {
+  try {
+    const items = await api('GET', '/requests/mine');
+    const tb = document.querySelector('#mineTable tbody'); tb.innerHTML = '';
+    document.getElementById('mineEmpty').style.display = items.length ? 'none' : 'block';
+    items.forEach(i => {
+      const step = i.stepInstances[i.currentStepIndex] || {};
+      tb.insertAdjacentHTML('beforeend', `
+        <tr>
+          <td><code>${i.id.slice(0,8)}</code></td>
+          <td>${i.targetType}:${i.targetId}</td>
+          <td>${badge(i.status)}</td>
+          <td>${step.stepId || '—'} ${step.status ? badge(step.status) : ''}</td>
+          <td>${when(i.submittedAt)}</td>
+        </tr>`);
+    });
+  } catch (e) { toast(e.message); }
+}
+
+// ----- new request -----
+async function submitRequest() {
+  try {
+    const body = { targetType: document.getElementById('newTargetType').value,
+                   targetId: document.getElementById('newTargetId').value };
+    await api('POST', '/requests', body);
+    toast('Demande soumise'); document.querySelector('nav button[data-tab=mine]').click();
+  } catch (e) { toast(e.message); }
+}
+
+// ----- designer -----
+let stepCount = 0;
+function addStep(initial) {
+  const idx = stepCount++;
+  const wrap = document.createElement('div'); wrap.className = 'step-card'; wrap.dataset.idx = idx;
+  wrap.innerHTML = `
+    <div class="step-head"><b>Étape ${idx + 1}</b>
+      <button onclick="this.closest('.step-card').remove()">×</button></div>
+    <div class="row">
+      <div><label>Nom</label><input data-k="name" value="${(initial && initial.name) || 'Étape ' + (idx+1)}"/></div>
+      <div><label>Type d'approbateur</label>
+        <select data-k="approverType">
+          <option>SPECIFIC_USER</option><option>GROUP</option><option>ROLE</option><option>MANAGER_ATTRIBUTE</option>
+        </select></div>
+      <div><label>Référence approbateur</label><input data-k="approverRef" placeholder="user id / group id / role / attribute"/></div>
+      <div><label>SLA (minutes)</label><input data-k="slaMinutes" type="number" value="${(initial && initial.slaMinutes) || 1440}"/></div>
+      <div><label>Reminders (offsets en min, séparés par ,)</label><input data-k="reminders" value="60,240"/></div>
+      <div><label>Canaux</label>
+        <select data-k="channels" multiple size="2"><option selected>EMAIL</option><option>WEBHOOK</option></select></div>
+      <div><label>Webhook URL</label><input data-k="webhookUrl" placeholder="https://..."/></div>
+      <div><label>Escalade</label>
+        <select data-k="escalationType"><option>REASSIGN</option><option>AUTO_APPROVE</option><option>AUTO_REJECT</option></select></div>
+    </div>`;
+  document.getElementById('stepsBuilder').appendChild(wrap);
+}
+function readStep(wrap, order) {
+  const v = k => wrap.querySelector(`[data-k="${k}"]`).value;
+  const mselect = wrap.querySelector('[data-k="channels"]');
+  const channels = Array.from(mselect.selectedOptions).map(o => o.value);
+  const reminders = v('reminders').split(',').map(s => Number(s.trim())).filter(Boolean);
+  return {
+    id: 's' + (order + 1), order, name: v('name'),
+    mode: 'SEQUENTIAL',
+    approverType: v('approverType'), approverRef: v('approverRef'),
+    slaMinutes: Number(v('slaMinutes')),
+    reminderOffsetsMinutes: reminders,
+    channels, webhookUrl: v('webhookUrl'),
+    escalationType: v('escalationType')
+  };
+}
+async function publishDef() {
+  const steps = Array.from(document.querySelectorAll('#stepsBuilder .step-card'))
+                     .map((w, i) => readStep(w, i));
+  const def = {
+    name: document.getElementById('dName').value,
+    targetType: document.getElementById('dTargetType').value,
+    targetId: document.getElementById('dTargetId').value,
+    fallbackGroupId: document.getElementById('dFallback').value || null,
+    steps
+  };
+  try { const out = await api('POST', '/definitions', def);
+        toast(`Publié — version ${out.version}`); }
+  catch (e) { toast(e.message); }
+}
+addStep(); addStep(); addStep();
+
+kc.init({ onLoad: 'login-required', checkLoginIframe: false, pkceMethod: 'S256' })
+  .then(ok => {
+    if (!ok) return;
+    document.getElementById('logoutBtn').style.display = 'inline-block';
+    const p = kc.tokenParsed || {};
+    document.getElementById('userLabel').textContent = p.preferred_username || p.sub || '';
+    loadInbox();
+  })
+  .catch(e => toast('Auth error: ' + e));
+</script>
+</body>
+</html>
