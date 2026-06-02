@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                                       http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.8.xsd">
+
+    <changeSet id="workflow-engine-1" author="keycloak">
+        <createTable tableName="WF_DEFINITION">
+            <column name="pk" type="VARCHAR(255)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="defId" type="VARCHAR(36)"/>
+            <column name="version" type="INT"/>
+            <column name="realmId" type="VARCHAR(36)"/>
+            <column name="name" type="VARCHAR(255)"/>
+            <column name="targetType" type="VARCHAR(32)"/>
+            <column name="targetId" type="VARCHAR(255)"/>
+            <column name="active" type="BOOLEAN"/>
+            <column name="fallbackGroupId" type="VARCHAR(36)"/>
+            <column name="calendarId" type="VARCHAR(36)"/>
+            <column name="steps_json" type="CLOB"/>
+        </createTable>
+        <createIndex tableName="WF_DEFINITION" indexName="ix_wfdef_target">
+            <column name="realmId"/><column name="targetType"/><column name="targetId"/><column name="active"/>
+        </createIndex>
+
+        <createTable tableName="WF_INSTANCE">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="realmId" type="VARCHAR(36)"/>
+            <column name="definitionId" type="VARCHAR(36)"/>
+            <column name="definitionVersion" type="INT"/>
+            <column name="requesterId" type="VARCHAR(36)"/>
+            <column name="targetType" type="VARCHAR(32)"/>
+            <column name="targetId" type="VARCHAR(255)"/>
+            <column name="status" type="VARCHAR(32)"/>
+            <column name="submittedAt" type="TIMESTAMP"/>
+            <column name="completedAt" type="TIMESTAMP"/>
+            <column name="currentStepIndex" type="INT"/>
+            <column name="currentDeadline" type="TIMESTAMP"/>
+            <column name="steps_json" type="CLOB"/>
+        </createTable>
+        <createIndex tableName="WF_INSTANCE" indexName="ix_wfi_deadline">
+            <column name="currentDeadline"/><column name="status"/>
+        </createIndex>
+        <createIndex tableName="WF_INSTANCE" indexName="ix_wfi_requester">
+            <column name="realmId"/><column name="requesterId"/>
+        </createIndex>
+        <createIndex tableName="WF_INSTANCE" indexName="ix_wfi_status">
+            <column name="realmId"/><column name="status"/>
+        </createIndex>
+
+        <createTable tableName="WF_AUDIT">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="realmId" type="VARCHAR(36)"/>
+            <column name="instanceId" type="VARCHAR(36)"/>
+            <column name="stepInstanceId" type="VARCHAR(36)"/>
+            <column name="at" type="TIMESTAMP"/>
+            <column name="actorId" type="VARCHAR(36)"/>
+            <column name="action" type="VARCHAR(32)"/>
+            <column name="details" type="VARCHAR(2000)"/>
+        </createTable>
+        <createIndex tableName="WF_AUDIT" indexName="ix_wfa_instance">
+            <column name="instanceId"/><column name="at"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="workflow-engine-2" author="keycloak">
+        <addColumn tableName="WF_DEFINITION">
+            <column name="validityMinutes" type="BIGINT"/>
+            <column name="requireJustification" type="BOOLEAN" defaultValueBoolean="false"/>
+            <column name="riskScoreExpression" type="VARCHAR(2000)"/>
+        </addColumn>
+        <addColumn tableName="WF_INSTANCE">
+            <column name="justification" type="VARCHAR(2000)"/>
+            <column name="riskScore" type="INT"/>
+            <column name="expiresAt" type="TIMESTAMP"/>
+        </addColumn>
+
+        <createTable tableName="WF_DELEGATION">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="realmId" type="VARCHAR(36)"/>
+            <column name="delegatorId" type="VARCHAR(36)"/>
+            <column name="delegateId" type="VARCHAR(36)"/>
+            <column name="fromInstant" type="TIMESTAMP"/>
+            <column name="toInstant" type="TIMESTAMP"/>
+            <column name="active" type="BOOLEAN"/>
+            <column name="reason" type="VARCHAR(500)"/>
+        </createTable>
+        <createIndex tableName="WF_DELEGATION" indexName="ix_wfd_delegator">
+            <column name="realmId"/><column name="delegatorId"/><column name="active"/>
+        </createIndex>
+        <createIndex tableName="WF_DELEGATION" indexName="ix_wfd_delegate">
+            <column name="realmId"/><column name="delegateId"/><column name="active"/>
+        </createIndex>
+
+        <createTable tableName="WF_SOD_POLICY">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="realmId" type="VARCHAR(36)"/>
+            <column name="name" type="VARCHAR(255)"/>
+            <column name="active" type="BOOLEAN"/>
+            <column name="conflicts_json" type="CLOB"/>
+        </createTable>
+        <createIndex tableName="WF_SOD_POLICY" indexName="ix_wfsod_realm">
+            <column name="realmId"/><column name="active"/>
+        </createIndex>
+
+        <createTable tableName="WF_REVOCATION">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="realmId" type="VARCHAR(36)"/>
+            <column name="instanceId" type="VARCHAR(36)"/>
+            <column name="userId" type="VARCHAR(36)"/>
+            <column name="targetType" type="VARCHAR(32)"/>
+            <column name="targetId" type="VARCHAR(255)"/>
+            <column name="revokeAt" type="TIMESTAMP"/>
+            <column name="status" type="VARCHAR(16)"/>
+            <column name="attempts" type="INT"/>
+        </createTable>
+        <createIndex tableName="WF_REVOCATION" indexName="ix_wfrev_due">
+            <column name="revokeAt"/><column name="status"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>
